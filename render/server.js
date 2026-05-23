@@ -58,7 +58,8 @@ async function renderRequest(req, res) {
         const page = await getRenderPage()
         await withTimeout(page.evaluate((params) => window.renderFunnyBird(params), req.query), RENDER_TIMEOUT_MS)
         console.log('Rendered request in ' + (Date.now() - renderStart) + 'ms')
-        const x = await page.screenshot({ path: 'my_screenshot.png' , encoding:'base64'})
+        const x = await page.screenshot({ encoding: 'binary' })
+        res.setHeader('Content-Type', 'image/png')
         res.end( x );
 
     } catch (err) {

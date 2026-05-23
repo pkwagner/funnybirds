@@ -3,7 +3,6 @@ import random
 import math
 import requests
 from PIL import Image
-from base64 import decodebytes
 import io
 import numpy as np
 import os
@@ -147,10 +146,8 @@ def json_to_image(json, mode):
     return NotImplementedError
   print(url)
   response = requests.get(url).content
-  #image = Image.fromstring('RGB',(512,512),decodestring(response))
-  image = decodebytes(response) 
 
-  img = Image.open(io.BytesIO(image))
+  img = Image.open(io.BytesIO(response))
   assert img.size == (256, 256), f"Image size is {img.size}, expected (256, 256)"
 
   return img

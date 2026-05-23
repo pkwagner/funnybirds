@@ -43,9 +43,7 @@
 
 			import { OrbitControls } from './jsm/controls/OrbitControls.js';
 			import { OutlineEffect } from './jsm/effects/OutlineEffect.js';
-			import { FontLoader } from './jsm/loaders/FontLoader.js';
 			import { GLTFLoader } from './jsm/loaders/GLTFLoader.js';
-			import { TextGeometry } from './jsm/geometries/TextGeometry.js';
 
 			window.__FUNNYBIRDS_READY__ = false;
 
@@ -160,15 +158,10 @@
 			let camera, scene, renderer, effect;
 			let particleLight;
 
-			const loader = new FontLoader();
-			loader.load( 'fonts/gentilis_regular.typeface.json', function ( font ) {
+			init();
+			animate();
 
-				init( font );
-				animate();
-
-			} );
-
-			function init( font ) {
+			function init() {
 
 				container = document.createElement( 'div' );
 				//container.style.margin = "100px";
