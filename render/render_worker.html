@@ -28,7 +28,7 @@
 			const modelCache = new Map();
 
 			renderer = new THREE.WebGLRenderer( { antialias: true } );
-			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setPixelRatio( 1 );
 			renderer.setSize( window.innerWidth, window.innerHeight );
 			renderer.outputEncoding = THREE.sRGBEncoding;
 			document.body.appendChild( renderer.domElement );

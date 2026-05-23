@@ -9,6 +9,7 @@ app.use(express.static(__dirname + '/js/three.js-master/examples'));
 var fs = require("fs");
 const puppeteer = require('puppeteer')
 const RENDER_TIMEOUT_MS = 30_000
+const RENDER_SIZE = 256
 
 let browserPromise
 let renderPagePromise
@@ -33,7 +34,7 @@ async function getRenderPage() {
         renderPagePromise = (async () => {
             const browser = await getBrowser()
             const page = await browser.newPage()
-            await page.setViewport({ width: 1256, height: 1256 })
+            await page.setViewport({ width: RENDER_SIZE, height: RENDER_SIZE })
             await page.goto('http://localhost:8081/render_worker', { waitUntil: 'domcontentloaded' })
             await page.waitForFunction('typeof window.renderFunnyBird === "function"')
             return page
@@ -52,12 +53,11 @@ function withTimeout(promise, ms) {
 async function renderRequest(req, res) {
 
     var params = '?' + req.url.split('?')[1];
-    console.log(params)
     const renderStart = Date.now()
     try {
         const page = await getRenderPage()
         await withTimeout(page.evaluate((params) => window.renderFunnyBird(params), req.query), RENDER_TIMEOUT_MS)
-        console.log('Render time: ' + (Date.now() - renderStart) + 'ms')
+        console.log('Rendered request in ' + (Date.now() - renderStart) + 'ms')
         const x = await page.screenshot({ path: 'my_screenshot.png' , encoding:'base64'})
         res.end( x );
 

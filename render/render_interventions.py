@@ -36,11 +36,7 @@ def json_to_image(json, mode):
   image = decodebytes(response) 
 
   img = Image.open(io.BytesIO(image))
-  newsize = (256, 256)
-  if mode == 'train' or mode == 'test':
-    img = img.resize(newsize)
-  elif mode == 'train_part_map' or mode == 'test_part_map':
-    img = img.resize(newsize, resample=Image.NEAREST)
+  assert img.size == (256, 256), f"Image size is {img.size}, expected (256, 256)"
 
   return img
 
