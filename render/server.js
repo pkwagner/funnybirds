@@ -11,6 +11,8 @@ const puppeteer = require('puppeteer')
 const RENDER_TIMEOUT_MS = 30_000
 
 let browserPromise
+let renderPagePromise
+let renderQueue = Promise.resolve()
 
 function getBrowser() {
     if (!browserPromise) {
@@ -26,34 +28,52 @@ function getBrowser() {
     return browserPromise
 }
 
-app.get('/render', async function (req, res) {
+async function getRenderPage() {
+    if (!renderPagePromise) {
+        renderPagePromise = (async () => {
+            const browser = await getBrowser()
+            const page = await browser.newPage()
+            await page.setViewport({ width: 1256, height: 1256 })
+            await page.goto('http://localhost:8081/render_worker', { waitUntil: 'domcontentloaded' })
+            await page.waitForFunction('typeof window.renderFunnyBird === "function"')
+            return page
+        })()
+    }
+    return renderPagePromise
+}
+
+function withTimeout(promise, ms) {
+    return Promise.race([
+        promise,
+        new Promise((resolve, reject) => setTimeout(() => reject(new Error('Render timed out')), ms))
+    ])
+}
+
+async function renderRequest(req, res) {
 
     var params = '?' + req.url.split('?')[1];
     console.log(params)
     const renderStart = Date.now()
-    let page
     try {
-        const browser = await getBrowser()
-        page = await browser.newPage()
-
-        await page.setViewport({ width: 1256, height: 1256 })
-        await page.goto('http://localhost:8081/page' + params, { waitUntil: 'domcontentloaded' })
-        await page.waitForFunction(
-            'window.__FUNNYBIRDS_READY__ === true',
-            { timeout: RENDER_TIMEOUT_MS }
-        )
+        const page = await getRenderPage()
+        await withTimeout(page.evaluate((params) => window.renderFunnyBird(params), req.query), RENDER_TIMEOUT_MS)
         console.log('Render time: ' + (Date.now() - renderStart) + 'ms')
         const x = await page.screenshot({ path: 'my_screenshot.png' , encoding:'base64'})
         res.end( x );
 
     } catch (err) {
+        renderPagePromise = undefined
         console.error('Render failed:', err)
         res.status(504).send('Render timed out before the scene was ready')
-    } finally {
-        if (page) {
-            await page.close()
-        }
     }
+}
+
+app.get('/render', function (req, res) {
+    renderQueue = renderQueue.then(() => renderRequest(req, res))
+})
+
+app.get('/render_worker', function (req, res) {
+    res.render('./render_worker.html')
 })
 
 app.get('/page', function (req, res) {

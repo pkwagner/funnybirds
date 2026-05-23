@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body { margin: 0; overflow: hidden; }
+			canvas { display: block; }
+		</style>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "./three.module.js"
+				}
+			}
+		</script>
+	</head>
+	<body>
+		<script type="module">
+			import * as THREE from 'three';
+			import { OutlineEffect } from './jsm/effects/OutlineEffect.js';
+			import { GLTFLoader } from './jsm/loaders/GLTFLoader.js';
+
+			let camera, scene, renderer, effect;
+			let renderMode = 'default';
+			let renderParams = {};
+			const loader = new GLTFLoader();
+			const modelCache = new Map();
+
+			renderer = new THREE.WebGLRenderer( { antialias: true } );
+			renderer.setPixelRatio( window.devicePixelRatio );
+			renderer.setSize( window.innerWidth, window.innerHeight );
+			renderer.outputEncoding = THREE.sRGBEncoding;
+			document.body.appendChild( renderer.domElement );
+			effect = new OutlineEffect( renderer );
+
+			const format = ( renderer.capabilities.isWebGL2 ) ? THREE.RedFormat : THREE.LuminanceFormat;
+			const colors = new Uint8Array( 1 + 2 );
+			for ( let c = 0; c <= 5; c ++ ) {
+				colors[ c ] = ( c / 5 ) * 256;
+			}
+			const gradientMap = new THREE.DataTexture( colors, colors.length, 1, format );
+			gradientMap.needsUpdate = true;
+
+			function numberParam( params, key, fallback ) {
+				const value = Number( params[ key ] );
+				return Number.isNaN( value ) ? fallback : value;
+			}
+
+			function csvNumbers( value ) {
+				if ( ! value ) return [];
+				return String( value ).split( ',' ).filter( Boolean ).map( Number );
+			}
+
+			function csvStrings( value ) {
+				if ( ! value ) return [];
+				return String( value ).split( ',' ).filter( Boolean );
+			}
+
+			function rotatedPoint( distance, pitch, roll ) {
+				const yaw = 0;
+				const point = { x: 0, y: 0, z: distance };
+				const cosa = Math.cos( yaw );
+				const sina = Math.sin( yaw );
+				const cosb = Math.cos( pitch );
+				const sinb = Math.sin( pitch );
+				const cosc = Math.cos( roll );
+				const sinc = Math.sin( roll );
+				return {
+					x: ( cosa * cosb ) * point.x + ( cosa * sinb * sinc - sina * cosc ) * point.y + ( cosa * sinb * cosc + sina * sinc ) * point.z,
+					y: ( sina * cosb ) * point.x + ( sina * sinb * sinc + cosa * cosc ) * point.y + ( sina * sinb * cosc - cosa * sinc ) * point.z,
+					z: ( -sinb ) * point.x + ( cosb * sinc ) * point.y + ( cosb * cosc ) * point.z
+				};
+			}
+
+			function createCheckerboardTexture( colorA, colorB, tiles ) {
+				const size = 128;
+				const canvas = document.createElement( 'canvas' );
+				canvas.width = size;
+				canvas.height = size;
+				const context = canvas.getContext( '2d' );
+				const tileSize = size / tiles;
+
+				for ( let y = 0; y < tiles; y++ ) {
+					for ( let x = 0; x < tiles; x++ ) {
+						context.fillStyle = ( x + y ) % 2 == 0 ? colorA : colorB;
+						context.fillRect( x * tileSize, y * tileSize, tileSize, tileSize );
+					}
+				}
+
+				const texture = new THREE.CanvasTexture( canvas );
+				texture.magFilter = THREE.NearestFilter;
+				texture.minFilter = THREE.NearestFilter;
+				texture.encoding = THREE.sRGBEncoding;
+				texture.needsUpdate = true;
+				return texture;
+			}
+
+			function createPartMaterial( partName, diffuseColor ) {
+				const materialParams = {
+					color: diffuseColor,
+					gradientMap: gradientMap
+				};
+				let needsGeneratedUVs = false;
+
+				if ( renderMode == 'default' && renderParams[ partName + '_texture' ] == 'checkerboard' ) {
+					const colorA = renderParams[ partName + '_texture_color_a' ] || 'black';
+					const colorB = renderParams[ partName + '_texture_color_b' ] || 'white';
+					const tiles = Number( renderParams[ partName + '_texture_size' ] ) || 8;
+					materialParams.color = new THREE.Color( 0xffffff );
+					materialParams.map = createCheckerboardTexture( colorA, colorB, tiles );
+					needsGeneratedUVs = true;
+				}
+
+				const material = new THREE.MeshToonMaterial( materialParams );
+				material.userData.needsGeneratedUVs = needsGeneratedUVs;
+				return material;
+			}
+
+			function generatePlanarUVs( geometry ) {
+				const position = geometry.attributes.position;
+				if ( ! position ) return;
+
+				geometry.computeBoundingBox();
+				const box = geometry.boundingBox;
+				const size = new THREE.Vector3();
+				box.getSize( size );
+				const axes = [
+					{ name: 'x', size: size.x, min: box.min.x },
+					{ name: 'y', size: size.y, min: box.min.y },
+					{ name: 'z', size: size.z, min: box.min.z }
+				];
+				axes.sort( function ( a, b ) { return b.size - a.size; } );
+
+				const uAxis = axes[ 0 ];
+				const vAxis = axes[ 1 ];
+				const uSize = uAxis.size || 1;
+				const vSize = vAxis.size || 1;
+				const uvs = new Float32Array( position.count * 2 );
+
+				function getComponent( index, axis ) {
+					if ( axis == 'x' ) return position.getX( index );
+					if ( axis == 'y' ) return position.getY( index );
+					return position.getZ( index );
+				}
+
+				for ( let i = 0; i < position.count; i++ ) {
+					uvs[ i * 2 ] = ( getComponent( i, uAxis.name ) - uAxis.min ) / uSize;
+					uvs[ i * 2 + 1 ] = ( getComponent( i, vAxis.name ) - vAxis.min ) / vSize;
+				}
+
+				geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvs, 2 ) );
+			}
+
+			function applyMaterial( mesh, material ) {
+				if ( material.userData.needsGeneratedUVs ) {
+					generatePlanarUVs( mesh.geometry );
+				}
+				mesh.material = material;
+			}
+
+			function loadModel( url ) {
+				if ( ! modelCache.has( url ) ) {
+					modelCache.set( url, new Promise( function ( resolve, reject ) {
+						loader.load( url, function ( gltf ) { resolve( gltf.scene ); }, undefined, reject );
+					} ) );
+				}
+				return modelCache.get( url ).then( function ( object ) { return object.clone( true ); } );
+			}
+
+			function modelUrl( directory, model ) {
+				if ( ! model || model == 'placeholder' ) return null;
+				return directory + model;
+			}
+
+			function partColor( color, fallback ) {
+				return new THREE.Color( ! color || color == 'placeholder' ? fallback : color );
+			}
+
+			async function addModel( url, partName, diffuseColor, setup ) {
+				if ( ! url ) return;
+				const object = await loadModel( url );
+				const material = createPartMaterial( partName, diffuseColor );
+				object.traverse( function ( child ) {
+					if ( child.isMesh ) applyMaterial( child, material );
+				} );
+				setup( object );
+				scene.add( object );
+			}
+
+			function addBackgroundObjects( params ) {
+				const bgObjects = csvNumbers( params.bg_objects );
+				const bgRadius = csvNumbers( params.bg_radius );
+				const bgPitch = csvNumbers( params.bg_pitch );
+				const bgRoll = csvNumbers( params.bg_roll );
+				const bgScaleX = csvNumbers( params.bg_scale_x );
+				const bgScaleY = csvNumbers( params.bg_scale_y );
+				const bgScaleZ = csvNumbers( params.bg_scale_z );
+				const bgRotX = csvNumbers( params.bg_rot_x );
+				const bgRotY = csvNumbers( params.bg_rot_y );
+				const bgRotZ = csvNumbers( params.bg_rot_z );
+				const bgColor = csvStrings( params.bg_color );
+
+				for ( let i = 0; i < bgObjects.length; i++ ) {
+					let geometry;
+					if ( bgObjects[ i ] == 0 ) geometry = new THREE.BoxGeometry( bgScaleX[ i ], bgScaleY[ i ], bgScaleZ[ i ] );
+					else if ( bgObjects[ i ] == 1 ) geometry = new THREE.ConeGeometry( bgScaleX[ i ], bgScaleY[ i ], bgScaleZ[ i ] );
+					else if ( bgObjects[ i ] == 2 ) geometry = new THREE.SphereGeometry( bgScaleX[ i ], bgScaleY[ i ], bgScaleZ[ i ] );
+					else if ( bgObjects[ i ] == 3 ) geometry = new THREE.CylinderGeometry( bgScaleX[ i ], bgScaleY[ i ], bgScaleZ[ i ] );
+					else if ( bgObjects[ i ] == 4 ) geometry = new THREE.CapsuleGeometry( bgScaleX[ i ], bgScaleY[ i ], bgScaleZ[ i ] );
+					else continue;
+
+					let diffuseColor;
+					if ( renderMode == 'default' ) diffuseColor = new THREE.Color( bgColor[ i ] );
+					else diffuseColor = new THREE.Color( 0xcccccc + i ).convertSRGBToLinear();
+
+					const material = new THREE.MeshToonMaterial( { color: diffuseColor, gradientMap: gradientMap } );
+					const bgGeometry = new THREE.Mesh( geometry, material );
+					const point = rotatedPoint( bgRadius[ i ], bgPitch[ i ], bgRoll[ i ] );
+					bgGeometry.position.set( point.x, point.y, point.z );
+					bgGeometry.rotation.x = bgRotX[ i ];
+					bgGeometry.rotation.y = bgRotY[ i ];
+					bgGeometry.rotation.z = bgRotZ[ i ];
+					scene.add( bgGeometry );
+				}
+			}
+
+			function render() {
+				if ( renderMode == 'default' ) effect.render( scene, camera );
+				else renderer.render( scene, camera );
+			}
+
+			window.renderFunnyBird = async function ( params ) {
+				renderParams = params;
+				renderMode = params.render_mode || 'default';
+				const cameraDistance = numberParam( params, 'camera_distance', 300 );
+				const cameraPoint = rotatedPoint(
+					cameraDistance,
+					numberParam( params, 'camera_pitch', 0 ),
+					numberParam( params, 'camera_roll', 0 )
+				);
+
+				camera = new THREE.PerspectiveCamera( 40, window.innerWidth / window.innerHeight, 1, 2500 );
+				camera.position.set( cameraPoint.x, cameraPoint.y, cameraDistance );
+				camera.lookAt( new THREE.Vector3( 0, 0, 0 ) );
+
+				scene = new THREE.Scene();
+				if ( renderMode == 'default' ) scene.background = new THREE.Color( 0x555599 );
+				else scene.background = new THREE.Color( 0x000000 ).convertSRGBToLinear();
+
+				const modelPromises = [];
+				modelPromises.push( addModel( 'data/XAI/bird01.glb', 'body', renderMode == 'default' ? new THREE.Color( 0xaaaaaa ) : new THREE.Color( 0xaaaaaa ).convertSRGBToLinear(), function ( object ) {
+					object.scale.set( 20, 20, 20 );
+				} ) );
+				modelPromises.push( addModel( modelUrl( 'data/XAI/beak/', params.beak_model ), 'beak', renderMode == 'default' ? partColor( params.beak_color, 'yellow' ) : new THREE.Color( 0xffff00 ).convertSRGBToLinear(), function ( object ) {
+					object.rotation.y = 3.14;
+					object.scale.set( 8, 8, 8 );
+					object.position.set( 0, 35, 60 );
+				} ) );
+				modelPromises.push( addModel( modelUrl( 'data/XAI/foot/', params.foot_model ), 'foot', renderMode == 'default' ? new THREE.Color( 0xffff00 ) : new THREE.Color( 0xff0001 ).convertSRGBToLinear(), function ( object ) {
+					object.rotation.y = 3.14;
+					object.rotation.z = 0.01;
+					object.scale.set( 8, 8, 8 );
+					object.position.set( -15, -10, 0 );
+				} ) );
+				modelPromises.push( addModel( modelUrl( 'data/XAI/foot/', params.foot_model ), 'foot', renderMode == 'default' ? new THREE.Color( 0xffff00 ) : new THREE.Color( 0xff0002 ).convertSRGBToLinear(), function ( object ) {
+					object.rotation.y = 3.14;
+					object.rotation.z = -0.01;
+					object.scale.set( 8, 8, 8 );
+					object.position.set( 15, -10, 0 );
+				} ) );
+
+				const eyeUrl = modelUrl( 'data/XAI/eye/', params.eye_model );
+				if ( eyeUrl ) modelPromises.push( loadModel( eyeUrl ).then( function ( object ) {
+					let material = new THREE.MeshToonMaterial( { color: renderMode == 'default' ? new THREE.Color( 0xffffff ) : new THREE.Color( 0xfffffd ).convertSRGBToLinear(), gradientMap: gradientMap } );
+					object.traverse( function ( child ) { if ( child.isMesh ) applyMaterial( child, material ); } );
+					material = new THREE.MeshToonMaterial( { color: renderMode == 'default' ? new THREE.Color( 0x000000 ) : new THREE.Color( 0xfffffd ).convertSRGBToLinear(), gradientMap: gradientMap } );
+					object.traverse( function ( child ) { if ( child.isMesh && child.name == 'Sphere001' ) child.material = material; } );
+					object.rotation.y = -0.2;
+					object.scale.set( 5, 5, 5 );
+					object.position.set( -10, 45, 50 );
+					scene.add( object );
+				} ) );
+				if ( eyeUrl ) modelPromises.push( loadModel( eyeUrl ).then( function ( object ) {
+					let material = new THREE.MeshToonMaterial( { color: renderMode == 'default' ? new THREE.Color( 0xffffff ) : new THREE.Color( 0xfffffe ).convertSRGBToLinear(), gradientMap: gradientMap } );
+					object.traverse( function ( child ) { if ( child.isMesh ) applyMaterial( child, material ); } );
+					material = new THREE.MeshToonMaterial( { color: renderMode == 'default' ? new THREE.Color( 0x000000 ) : new THREE.Color( 0xfffffe ).convertSRGBToLinear(), gradientMap: gradientMap } );
+					object.traverse( function ( child ) { if ( child.isMesh && child.name == 'Sphere001' ) child.material = material; } );
+					object.rotation.y = 0.2;
+					object.scale.set( 5, 5, 5 );
+					object.position.set( 10, 45, 50 );
+					scene.add( object );
+				} ) );
+
+				modelPromises.push( addModel( modelUrl( 'data/XAI/tail/', params.tail_model ), 'tail', renderMode == 'default' ? partColor( params.tail_color, 'red' ) : new THREE.Color( 0x0000ff ).convertSRGBToLinear(), function ( object ) {
+					object.scale.set( 15, 15, 15 );
+					object.position.set( 0, -2, -47 );
+				} ) );
+				modelPromises.push( addModel( modelUrl( 'data/XAI/wing/', params.wing_model ), 'wing', renderMode == 'default' ? partColor( params.wing_color, 'green' ) : new THREE.Color( 0x00ff01 ).convertSRGBToLinear(), function ( object ) {
+					object.scale.set( 35, -35, 35 );
+					object.rotation.x = -0.3;
+					object.position.set( -20, 5, 10 );
+				} ) );
+				modelPromises.push( addModel( modelUrl( 'data/XAI/wing/', params.wing_model ), 'wing', renderMode == 'default' ? partColor( params.wing_color, 'green' ) : new THREE.Color( 0x00ff02 ).convertSRGBToLinear(), function ( object ) {
+					object.scale.set( -35, -35, 35 );
+					object.rotation.x = -0.3;
+					object.position.set( 20, 5, 10 );
+				} ) );
+
+				addBackgroundObjects( params );
+
+				const particleLight = new THREE.Mesh();
+				scene.add( particleLight );
+				if ( renderMode == 'default' ) {
+					scene.add( new THREE.AmbientLight( 0x888888 ) );
+					particleLight.add( new THREE.PointLight( 0xffffff, 4, 800 ) );
+				} else {
+					scene.add( new THREE.AmbientLight( 0xffffff ) );
+				}
+
+				const lightPoint = rotatedPoint(
+					cameraDistance,
+					numberParam( params, 'light_pitch', 0 ),
+					numberParam( params, 'light_roll', 0 )
+				);
+				particleLight.position.set( lightPoint.x, lightPoint.y, lightPoint.z );
+
+				await Promise.all( modelPromises );
+				render();
+				await new Promise( function ( resolve ) { requestAnimationFrame( resolve ); } );
+				render();
+				await new Promise( function ( resolve ) { requestAnimationFrame( resolve ); } );
+				render();
+			};
+		</script>
+	</body>
+</html>
