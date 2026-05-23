@@ -66,6 +66,7 @@
 			}
 			
 			var render_mode = <%- JSON.stringify(render_mode) %>
+			var render_params = <%- JSON.stringify(query) %>
 
 			var camera_distance = <%- JSON.stringify(camera_distance) %>
 			var camera_pitch = <%- JSON.stringify(camera_pitch) %>
@@ -254,6 +255,95 @@
 				const gradientMap = new THREE.DataTexture( colors, colors.length, 1, format );
 				gradientMap.needsUpdate = true;
 
+				function createCheckerboardTexture( colorA, colorB, tiles ) {
+					var size = 128;
+					var canvas = document.createElement( 'canvas' );
+					canvas.width = size;
+					canvas.height = size;
+					var context = canvas.getContext( '2d' );
+					var tileSize = size / tiles;
+
+					for ( var y = 0; y < tiles; y++ ) {
+						for ( var x = 0; x < tiles; x++ ) {
+							context.fillStyle = ( x + y ) % 2 == 0 ? colorA : colorB;
+							context.fillRect( x * tileSize, y * tileSize, tileSize, tileSize );
+						}
+					}
+
+					var texture = new THREE.CanvasTexture( canvas );
+					texture.magFilter = THREE.NearestFilter;
+					texture.minFilter = THREE.NearestFilter;
+					texture.encoding = THREE.sRGBEncoding;
+					texture.needsUpdate = true;
+					return texture;
+				}
+
+				function createPartMaterial( partName, diffuseColor ) {
+					var materialParams = {
+						color: diffuseColor,
+						gradientMap: gradientMap
+					};
+					var needsGeneratedUVs = false;
+
+					if ( render_mode == 'default' && render_params[ partName + '_texture' ] == 'checkerboard' ) {
+						var colorA = render_params[ partName + '_texture_color_a' ] || 'black';
+						var colorB = render_params[ partName + '_texture_color_b' ] || 'white';
+						var tiles = Number( render_params[ partName + '_texture_size' ] ) || 8;
+						materialParams.color = new THREE.Color( 0xffffff );
+						materialParams.map = createCheckerboardTexture( colorA, colorB, tiles );
+						needsGeneratedUVs = true;
+					}
+
+					var material = new THREE.MeshToonMaterial( materialParams );
+					material.userData.needsGeneratedUVs = needsGeneratedUVs;
+					return material;
+				}
+
+				function generatePlanarUVs( geometry ) {
+					var position = geometry.attributes.position;
+					if ( ! position ) {
+						return;
+					}
+
+					function getPositionComponent( index, axis ) {
+						if ( axis == 'x' ) return position.getX( index );
+						if ( axis == 'y' ) return position.getY( index );
+						return position.getZ( index );
+					}
+
+					geometry.computeBoundingBox();
+					var box = geometry.boundingBox;
+					var size = new THREE.Vector3();
+					box.getSize( size );
+
+					var axes = [
+						{ name: 'x', size: size.x, min: box.min.x },
+						{ name: 'y', size: size.y, min: box.min.y },
+						{ name: 'z', size: size.z, min: box.min.z }
+					];
+					axes.sort( function ( a, b ) { return b.size - a.size; } );
+
+					var uAxis = axes[ 0 ];
+					var vAxis = axes[ 1 ];
+					var uSize = uAxis.size || 1;
+					var vSize = vAxis.size || 1;
+					var uvs = new Float32Array( position.count * 2 );
+
+					for ( var i = 0; i < position.count; i++ ) {
+						uvs[ i * 2 ] = ( getPositionComponent( i, uAxis.name ) - uAxis.min ) / uSize;
+						uvs[ i * 2 + 1 ] = ( getPositionComponent( i, vAxis.name ) - vAxis.min ) / vSize;
+					}
+
+					geometry.setAttribute( 'uv', new THREE.BufferAttribute( uvs, 2 ) );
+				}
+
+				function applyMaterial( mesh, material ) {
+					if ( material.userData.needsGeneratedUVs ) {
+						generatePlanarUVs( mesh.geometry );
+					}
+					mesh.material = material;
+				}
+
 
 				var loader = new GLTFLoader();
 				var pendingModelLoads = 0;
@@ -292,12 +382,9 @@
 						diffuseColor = new THREE.Color( 0xaaaaaa ).convertSRGBToLinear();
 					}
 
-					const material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					const material = createPartMaterial( 'body', diffuseColor );
 					base.traverse((o) => {
-					  if (o.isMesh) o.material = material;
+					  if (o.isMesh) applyMaterial( o, material );
 					});
 
 					//var newMaterial = new THREE.MeshStandardMaterial({color: 0xff0000});
@@ -326,12 +413,9 @@
 						diffuseColor = new THREE.Color( 0xffff00 ).convertSRGBToLinear();
 					}
 
-					const material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					const material = createPartMaterial( 'beak', diffuseColor );
 					part01.traverse((o) => {
-					  if (o.isMesh) o.material = material;
+					  if (o.isMesh) applyMaterial( o, material );
 					});
 
 					//var newMaterial = new THREE.MeshStandardMaterial({color: 0xff0000});
@@ -378,12 +462,9 @@
 						diffuseColor = new THREE.Color( 0xff0001 ).convertSRGBToLinear();
 					}
 
-					const material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					const material = createPartMaterial( 'foot', diffuseColor );
 					part02.traverse((o) => {
-					  if (o.isMesh) o.material = material;
+					  if (o.isMesh) applyMaterial( o, material );
 					});
 
 					//var newMaterial = new THREE.MeshStandardMaterial({color: 0xff0000});
@@ -415,12 +496,9 @@
 						diffuseColor = new THREE.Color( 0xff0002 ).convertSRGBToLinear();
 					}
 
-					const material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					const material = createPartMaterial( 'foot', diffuseColor );
 					part03.traverse((o) => {
-					  if (o.isMesh) o.material = material;
+					  if (o.isMesh) applyMaterial( o, material );
 					});
 
 					//var newMaterial = new THREE.MeshStandardMaterial({color: 0xff0000});
@@ -460,7 +538,7 @@
 						gradientMap: gradientMap
 					} );
 					part04.traverse((o) => {
-						if (o.isMesh) o.material = material;
+						if (o.isMesh) applyMaterial( o, material );
 						
 					});
 
@@ -515,7 +593,7 @@
 						gradientMap: gradientMap
 					} );
 					part05.traverse((o) => {
-						if (o.isMesh) o.material = material;
+						if (o.isMesh) applyMaterial( o, material );
 						
 					});
 
@@ -567,12 +645,9 @@
 						diffuseColor = new THREE.Color( 0x0000ff ).convertSRGBToLinear();
 					}
 
-					var material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					var material = createPartMaterial( 'tail', diffuseColor );
 					part06.traverse((o) => {
-						if (o.isMesh) o.material = material;
+						if (o.isMesh) applyMaterial( o, material );
 						
 					});
 
@@ -607,12 +682,9 @@
 						diffuseColor = new THREE.Color( 0x00ff01 ).convertSRGBToLinear();
 					}
 
-					var material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					var material = createPartMaterial( 'wing', diffuseColor );
 					part07.traverse((o) => {
-						if (o.isMesh) o.material = material;
+						if (o.isMesh) applyMaterial( o, material );
 						
 					});
 
@@ -647,12 +719,9 @@
 						diffuseColor = new THREE.Color( 0x00ff02 ).convertSRGBToLinear();
 					}
 
-					var material = new THREE.MeshToonMaterial( {
-						color: diffuseColor,
-						gradientMap: gradientMap
-					} );
+					var material = createPartMaterial( 'wing', diffuseColor );
 					part08.traverse((o) => {
-						if (o.isMesh) o.material = material;
+						if (o.isMesh) applyMaterial( o, material );
 						
 					});
 

@@ -1,0 +1,11 @@
+{
+  "name": "checkerboard_wings",
+  "rules": [
+    {
+      "part": "body",
+      "type": "checkerboard_texture",
+      "colors": ["black", "white"],
+      "texture_size": 10
+    }
+  ]
+}

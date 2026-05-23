@@ -9,6 +9,7 @@ import os
 from glob import glob
 from shutil import rmtree
 import argparse
+from urllib.parse import urlencode
 
 def delete_rand_items(input_list, n):
     to_delete = set(random.sample(range(len(input_list)), n))
@@ -126,13 +127,12 @@ def create_dataset_json(samples_per_class, classes, parts, min_bg_parts, max_bg_
   return dataset
 
 def json_to_url(json, prefix = 'http://localhost:8081/render?', render_mode = 'default'):
-  url = prefix
-  url = url + 'render_mode=' + render_mode + '&'
+  params = {'render_mode': render_mode}
   for key in list(json.keys()):
     if key == 'class_idx':
       continue
-    url = url + key + '=' + str(json[key]) + '&'
-  return url[:-1]
+    params[key] = json[key]
+  return prefix + urlencode(params)
     
 
 
@@ -154,12 +154,54 @@ def json_to_image(json, mode):
 
   
 
-def create_dataset(dataset_json, store_path, mode):
+def load_bias_config(path):
+  if path is None:
+    return None
+  with open(path) as f:
+    return json.load(f)
+
+
+def apply_bias_config(sample_json, bias_config):
+  if bias_config is None:
+    return sample_json
+
+  sample_json = sample_json.copy()
+  for rule in bias_config.get('rules', []):
+    parts = rule.get('parts', rule.get('part', rule.get('target')))
+    if parts is None:
+      continue
+    if isinstance(parts, str):
+      parts = [parts]
+
+    for part in parts:
+      params = rule.copy()
+      for key in ['name', 'part', 'parts', 'target']:
+        params.pop(key, None)
+
+      if params.get('type') == 'checkerboard_texture':
+        params['texture'] = 'checkerboard'
+      params.pop('type', None)
+
+      colors = params.pop('colors', None)
+      if colors is not None:
+        if len(colors) >= 1:
+          sample_json[part + '_texture_color_a'] = colors[0]
+        if len(colors) >= 2:
+          sample_json[part + '_texture_color_b'] = colors[1]
+
+      for key, value in params.items():
+        sample_json[part + '_' + key] = value
+
+  return sample_json
+
+
+def create_dataset(dataset_json, store_path, mode, bias_config):
   for i,sample_json in enumerate(dataset_json):
     print(i)
     for attempt in range(10):
       try:
-        img = json_to_image(sample_json, mode)
+        render_json = apply_bias_config(sample_json, bias_config)
+        img = json_to_image(render_json, mode)
         # test if all values are the same
         im_matrix = np.array(img)
         if np.all(im_matrix[:,:,0] == im_matrix[0,0,0]):
@@ -194,6 +236,10 @@ parser.add_argument('--render_dataset', action='store_true',
                     help='create_datasert_json') 
 parser.add_argument('--disable_interventions', action='store_true',
                     help='Disable train-time random part removal.')
+parser.add_argument('--bias_config', default=None, type=str,
+                    help='Optional JSON render-bias config. Applied only while rendering, not when saving dataset JSON.')
+parser.add_argument('--render_variant', default=None, type=str,
+                    help='Optional output folder suffix, e.g. checkerboard_wings. Defaults to the bias config name or filename.')
 
 args = parser.parse_args()
 
@@ -204,7 +250,16 @@ path = os.path.join(args.root_path, 'FunnyBirds')
 if not os.path.exists(path):
     os.makedirs(path)
 
-path_mode = os.path.join(args.root_path, 'FunnyBirds', args.mode)
+bias_config = load_bias_config(args.bias_config)
+render_variant = args.render_variant
+if render_variant is None and bias_config is not None:
+    render_variant = bias_config.get('name', os.path.splitext(os.path.basename(args.bias_config))[0])
+
+path_mode_name = args.mode
+if render_variant is not None:
+    path_mode_name = path_mode_name + '_' + render_variant
+
+path_mode = os.path.join(args.root_path, 'FunnyBirds', path_mode_name)
 if not os.path.exists(path_mode):
     os.makedirs(path_mode)
 
@@ -244,4 +299,4 @@ else:
 
 
 if args.render_dataset:
-    create_dataset(dataset_json, path_mode, args.mode)
+    create_dataset(dataset_json, path_mode, args.mode, bias_config)
