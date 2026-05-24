@@ -10,9 +10,12 @@ var fs = require("fs");
 const puppeteer = require('puppeteer')
 const RENDER_TIMEOUT_MS = 30_000
 const RENDER_SIZE = 256
+const RENDER_PAGE_MAX_RENDERS = 1_000
 
 let browserPromise
+let renderPage
 let renderPagePromise
+let renderPageRenderCount = 0
 let renderQueue = Promise.resolve()
 
 function getBrowser() {
@@ -37,17 +40,42 @@ async function getRenderPage() {
             await page.setViewport({ width: RENDER_SIZE, height: RENDER_SIZE })
             await page.goto('http://localhost:8081/render_worker', { waitUntil: 'domcontentloaded' })
             await page.waitForFunction('typeof window.renderFunnyBird === "function"')
+            renderPage = page
             return page
         })()
     }
     return renderPagePromise
 }
 
+async function closeRenderPage(reason) {
+    const page = renderPage
+    renderPage = undefined
+    renderPagePromise = undefined
+    renderPageRenderCount = 0
+
+    if (!page || page.isClosed()) return
+
+    console.log(reason)
+    try {
+        await page.close()
+    } catch (err) {
+        console.error('Failed to close render page:', err)
+    }
+}
+
+async function recycleRenderPageIfNeeded() {
+    if (!RENDER_PAGE_MAX_RENDERS || renderPageRenderCount < RENDER_PAGE_MAX_RENDERS) return
+    await closeRenderPage('Recycling render page after ' + renderPageRenderCount + ' renders')
+}
+
 function withTimeout(promise, ms) {
+    let timeout
     return Promise.race([
         promise,
-        new Promise((resolve, reject) => setTimeout(() => reject(new Error('Render timed out')), ms))
-    ])
+        new Promise((resolve, reject) => {
+            timeout = setTimeout(() => reject(new Error('Render timed out')), ms)
+        })
+    ]).finally(() => clearTimeout(timeout))
 }
 
 async function renderRequest(req, res) {
@@ -55,15 +83,17 @@ async function renderRequest(req, res) {
     var params = '?' + req.url.split('?')[1];
     const renderStart = Date.now()
     try {
+        await recycleRenderPageIfNeeded()
         const page = await getRenderPage()
         await withTimeout(page.evaluate((params) => window.renderFunnyBird(params), req.query), RENDER_TIMEOUT_MS)
         console.log('Rendered request in ' + (Date.now() - renderStart) + 'ms')
         const x = await page.screenshot({ encoding: 'binary' })
         res.setHeader('Content-Type', 'image/png')
         res.end( x );
+        renderPageRenderCount += 1
 
     } catch (err) {
-        renderPagePromise = undefined
+        await closeRenderPage('Discarding render page after failed render')
         console.error('Render failed:', err)
         res.status(504).send('Render timed out before the scene was ready')
     }
@@ -126,4 +156,3 @@ var server = app.listen(8081, function () {
    var port = server.address().port
    console.log("Example app listening at http://%s:%s", host, port)
 })
-
